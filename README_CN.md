@@ -60,72 +60,108 @@ pip install -r requirements.txt
 python example.py
 ```
 
-### 基础用法
+### 基础用法 - 多智能体团队协作
 
 ```python
 import asyncio
-from src import MultiAgentCoordinator, AdapterRegistry, GoogleADKAdapter
-from src.core.models import MultiAgentConfig, AgentConfig, Task, WorkflowConfig
-from src.core.enums import AgentType, WorkflowType, ExecutionStrategy
+from tgo.agents import (
+    MultiAgentCoordinator, AdapterRegistry, GoogleADKAdapter,
+    InMemoryMemoryManager, InMemorySessionManager
+)
+from tgo.agents.core.models import (
+    MultiAgentConfig, AgentConfig, Task, WorkflowConfig, Session
+)
+from tgo.agents.core.enums import (
+    AgentType, WorkflowType, ExecutionStrategy, SessionType
+)
 
 async def main():
-    # 初始化记忆和会话管理器
+    # 1. 初始化系统组件
     memory_manager = InMemoryMemoryManager()
     session_manager = InMemorySessionManager()
-
-    # 初始化系统
     registry = AdapterRegistry()
     registry.register("google-adk", GoogleADKAdapter())
 
-    # 创建协调器，包含记忆和会话管理
     coordinator = MultiAgentCoordinator(
         registry=registry,
         memory_manager=memory_manager,
         session_manager=session_manager
     )
 
-    # 创建会话
-    session = Session(
-        session_id="session_001",
-        user_id="user_123",
-        session_type=SessionType.SINGLE_CHAT
-    )
-    await session_manager.create_session(session)
+    # 2. 创建会话
+    await session_manager.create_session("session_001", "user_123", SessionType.SINGLE_CHAT)
+    session = Session(session_id="session_001", user_id="user_123", session_type=SessionType.SINGLE_CHAT)
 
-    # 配置智能体
+    # 3. 配置多智能体团队（管理者 + 专家）
     config = MultiAgentConfig(
         framework="google-adk",
         agents=[
+            # 管理者智能体 - 协调团队
             AgentConfig(
-                agent_id="manager_001",
-                name="任务管理器",
+                agent_id="project_manager",
+                name="项目经理",
                 agent_type=AgentType.MANAGER,
-                model="gemini-2.0-flash"
+                model="gemini-2.0-flash",
+                instructions="你负责协调专家智能体之间的任务并综合他们的结果。"
+            ),
+            # 研究专家
+            AgentConfig(
+                agent_id="researcher",
+                name="研究专家",
+                agent_type=AgentType.EXPERT,
+                model="gemini-2.0-flash",
+                instructions="你是研究专家。提供全面的市场分析和数据洞察。"
+            ),
+            # 写作专家
+            AgentConfig(
+                agent_id="writer",
+                name="内容撰写专家",
+                agent_type=AgentType.EXPERT,
+                model="gemini-2.0-flash",
+                instructions="你是内容撰写专家。根据研究数据创建清晰、引人入胜的报告。"
             )
         ],
         workflow=WorkflowConfig(
-            workflow_type=WorkflowType.SINGLE,
-            execution_strategy=ExecutionStrategy.FAIL_FAST
+            workflow_type=WorkflowType.HIERARCHICAL,  # 管理者协调专家
+            execution_strategy=ExecutionStrategy.FAIL_FAST,
+            manager_agent_id="project_manager",
+            expert_agent_ids=["researcher", "writer"]
         )
     )
 
-    # 执行任务（带会话上下文）
+    # 4. 为团队创建任务
     task = Task(
-        title="分析市场趋势",
-        description="提供当前AI市场趋势的分析"
+        title="AI市场分析报告",
+        description="创建一份关于当前AI市场趋势的综合报告，包括主要参与者、增长预测和新兴技术。"
     )
 
+    # 5. 执行多智能体工作流
+    print("🚀 开始多智能体协作...")
     result = await coordinator.execute_task(config, task, session)
-    print(f"结果: {result.result}")
+
+    if result.is_successful():
+        print("✅ 多智能体任务成功完成！")
+        print(f"📊 最终结果: {result.result}")
+        print(f"👥 参与的智能体: {', '.join(result.agents_used)}")
+    else:
+        print(f"❌ 任务失败: {result.error_message}")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+**🔄 此多智能体工作流中发生的事情：**
+1. **项目经理** 接收任务并将其分解为子任务
+2. **研究专家** 分析市场数据和趋势
+3. **内容撰写专家** 创建最终报告结构
+4. **项目经理** 将所有结果综合成一份综合报告
+
+这展示了真正的多智能体协作，不同的专家在协调下共同工作。
+
 ## 📁 目录结构
 
 ```
-src/
+tgo/agents/
 ├── core/                          # 🏗️ 核心抽象
 │   ├── interfaces.py              # 核心接口和协议
 │   ├── models.py                  # 数据模型和模式
@@ -147,7 +183,7 @@ src/
 │   ├── memory_manager.py          # 记忆管理实现
 │   └── session_manager.py         # 会话管理
 ├── example.py                     # 📖 完整使用示例
-└── basic_session_memory_example.py # 🧠 记忆和会话示例
+└── debug_example.py               # 🔧 调试示例
 ```
 
 ## 🔧 核心组件

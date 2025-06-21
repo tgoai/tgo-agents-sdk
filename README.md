@@ -76,7 +76,7 @@ pip install -r requirements.txt
 python example.py
 ```
 
-### Basic Usage
+### Basic Usage - Multi-Agent Team Collaboration
 
 ```python
 import asyncio
@@ -92,58 +92,87 @@ from tgo.agents.core.enums import (
 )
 
 async def main():
-    # Initialize memory and session managers
+    # 1. Initialize system components
     memory_manager = InMemoryMemoryManager()
     session_manager = InMemorySessionManager()
-
-    # Initialize the system
     registry = AdapterRegistry()
     registry.register("google-adk", GoogleADKAdapter())
 
-    # Create coordinator with memory and session management
     coordinator = MultiAgentCoordinator(
         registry=registry,
         memory_manager=memory_manager,
         session_manager=session_manager
     )
 
-    # Create session
-    session = Session(
-        session_id="session_001",
-        user_id="user_123",
-        session_type=SessionType.SINGLE_CHAT
-    )
-    await session_manager.create_session(session)
+    # 2. Create session
+    await session_manager.create_session("session_001", "user_123", SessionType.SINGLE_CHAT)
+    session = Session(session_id="session_001", user_id="user_123", session_type=SessionType.SINGLE_CHAT)
 
-    # Configure agents
+    # 3. Configure multi-agent team (Manager + Experts)
     config = MultiAgentConfig(
         framework="google-adk",
         agents=[
+            # Manager Agent - coordinates the team
             AgentConfig(
-                agent_id="manager_001",
-                name="Task Manager",
+                agent_id="project_manager",
+                name="Project Manager",
                 agent_type=AgentType.MANAGER,
-                model="gemini-2.0-flash"
+                model="gemini-2.0-flash",
+                instructions="You coordinate tasks between expert agents and synthesize their results."
+            ),
+            # Research Expert
+            AgentConfig(
+                agent_id="researcher",
+                name="Research Specialist",
+                agent_type=AgentType.EXPERT,
+                model="gemini-2.0-flash",
+                instructions="You are a research expert. Provide thorough market analysis and data insights."
+            ),
+            # Writing Expert
+            AgentConfig(
+                agent_id="writer",
+                name="Content Writer",
+                agent_type=AgentType.EXPERT,
+                model="gemini-2.0-flash",
+                instructions="You are a content writer. Create clear, engaging reports from research data."
             )
         ],
         workflow=WorkflowConfig(
-            workflow_type=WorkflowType.SINGLE,
-            execution_strategy=ExecutionStrategy.FAIL_FAST
+            workflow_type=WorkflowType.HIERARCHICAL,  # Manager coordinates experts
+            execution_strategy=ExecutionStrategy.FAIL_FAST,
+            manager_agent_id="project_manager",
+            expert_agent_ids=["researcher", "writer"]
         )
     )
 
-    # Execute task with session context
+    # 4. Create task for the team
     task = Task(
-        title="Analyze market trends",
-        description="Provide analysis of current AI market trends"
+        title="AI Market Analysis Report",
+        description="Create a comprehensive report on current AI market trends, including key players, growth projections, and emerging technologies."
     )
 
+    # 5. Execute multi-agent workflow
+    print("🚀 Starting multi-agent collaboration...")
     result = await coordinator.execute_task(config, task, session)
-    print(f"Result: {result.result}")
+
+    if result.is_successful():
+        print("✅ Multi-agent task completed successfully!")
+        print(f"📊 Final Result: {result.result}")
+        print(f"👥 Agents involved: {', '.join(result.agents_used)}")
+    else:
+        print(f"❌ Task failed: {result.error_message}")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+**🔄 What happens in this multi-agent workflow:**
+1. **Project Manager** receives the task and breaks it down into subtasks
+2. **Research Specialist** analyzes market data and trends
+3. **Content Writer** creates the final report structure
+4. **Project Manager** synthesizes all results into a comprehensive report
+
+This demonstrates true multi-agent collaboration where different specialists work together under coordination.
 
 ## 📁 Directory Structure
 
