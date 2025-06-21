@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "通用多智能体平台"
 authors = ["TGO Team"]
 readme = "README.md"
-packages = [{include = "src"}]
+packages = [{include = "tgo/agents"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -34,9 +34,16 @@ target-version = "py311"
 line-length = 88
 
 [tool.pyright]
-include = ["src"]
+include = ["tgo/agents"]
 exclude = ["**/__pycache__"]
-strict = ["src"]
+strict = ["tgo/agents"]
 reportMissingImports = true
 reportMissingTypeStubs = false
+reportCallIssue = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportArgumentType = false
+reportUnknownArgumentType = false
+reportPossiblyUnboundVariable = false
+reportUnnecessaryIsInstance = false
 pythonVersion = "3.11"

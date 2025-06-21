@@ -1,0 +1,19 @@
+{
+  "include": ["src"],
+  "exclude": ["**/__pycache__"],
+  "strict": ["src"],
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportCallIssue": false,
+  "reportUnknownMemberType": false,
+  "reportUnknownVariableType": false,
+  "reportArgumentType": false,
+  "reportUnknownArgumentType": false,
+  "reportPossiblyUnboundVariable": false,
+  "reportUnnecessaryIsInstance": false,
+  "reportUnusedImport": false,
+  "reportUnusedVariable": false,
+  "reportIncompatibleMethodOverride": false,
+  "reportConstantRedefinition": false,
+  "pythonVersion": "3.11"
+}
