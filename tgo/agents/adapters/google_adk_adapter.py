@@ -326,8 +326,6 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
            session_service= session_service
        )
         user_content = types.Content(role='user', parts=[types.Part(text=task_input)])
-        final_response_content = "No final response received."
-
         
         for event in runner.run(user_id=context.user_id, session_id=context.session_id, new_message=user_content):
             if event.is_final_response() and event.content and event.content.parts:

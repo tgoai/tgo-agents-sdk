@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "tgo-agent-team"
+name = "tgo-agents-sdk"
 version = "0.1.0"
-description = "通用多智能体平台"
+description = "multi-agent sdk"
 authors = ["TGO Team"]
 readme = "README.md"
 packages = [{include = "tgo/agents"}]
