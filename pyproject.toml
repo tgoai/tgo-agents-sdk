@@ -1,0 +1,42 @@
+[tool.poetry]
+name = "tgo-agent-team"
+version = "0.1.0"
+description = "通用多智能体平台"
+authors = ["TGO Team"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pydantic = "^2.5.0"
+aiohttp = "^3.12.13"
+google-adk = "^1.4.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+pytest-mock = "^3.12.0"
+pytest-cov = "^4.1.0"
+black = "^23.0.0"
+ruff = "^0.1.0"
+pyright = "^1.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/__pycache__"]
+strict = ["src"]
+reportMissingImports = true
+reportMissingTypeStubs = false
+pythonVersion = "3.11"
