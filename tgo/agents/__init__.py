@@ -19,13 +19,15 @@ from .adapters.google_adk_adapter import GoogleADKAdapter
 from .memory.in_memory_memory_manager import InMemoryMemoryManager
 from .memory.in_memory_session_manager import InMemorySessionManager
 
+
 # Core models and enums
 from .core.models import (
     Task, Agent, AgentConfig, AgentInstance, MultiAgentConfig,
     WorkflowConfig, Session, SessionConfig, MemoryEntry, MemoryConfig,
     TaskResult, AgentExecutionResult, MultiAgentResult,
     ExecutionContext, ExecutionMetrics,
-    ToolCallResult, KnowledgeBaseQueryResult
+    ToolCallResult, KnowledgeBaseQueryResult,
+    MCPTool, MCPToolCallRequest, MCPToolCallResult
 )
 
 from .core.enums import (
@@ -71,6 +73,11 @@ __all__ = [
     "ExecutionMetrics",
     "ToolCallResult",
     "KnowledgeBaseQueryResult",
+
+    # MCP models
+    "MCPTool",
+    "MCPToolCallRequest",
+    "MCPToolCallResult",
 
     # Enums
     "AgentType",

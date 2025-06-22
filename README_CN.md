@@ -12,6 +12,7 @@
 - **🎯 统一接口**: 无论底层框架如何，都提供一致的API
 - **🧠 记忆管理**: 跨会话的持久对话和上下文记忆
 - **🔐 会话管理**: 多用户会话处理，支持群聊
+- **🌐 MCP工具集成**: Model Context Protocol工具支持，扩展智能体能力
 
 ## 📊 系统架构图
 
@@ -26,6 +27,7 @@ graph TB
     Coordinator --> WorkflowEngine[⚙️ 工作流引擎]
     Coordinator --> SessionMgr[🔐 会话管理器]
     Coordinator --> MemoryMgr[🧠 记忆管理器]
+    Coordinator --> MCPMgr[🌐 MCP工具管理器]
     
     %% 框架适配器层
     Registry --> GoogleADK[🟦 GoogleADK适配器]
@@ -89,8 +91,11 @@ async def main():
     )
 
     # 2. 创建会话
-    await session_manager.create_session("session_001", "user_123", SessionType.SINGLE_CHAT)
-    session = Session(session_id="session_001", user_id="user_123", session_type=SessionType.SINGLE_CHAT)
+    session = await session_manager.create_session(
+        session_id="session_001",
+        user_id="user_123",
+        session_type=SessionType.SINGLE_CHAT
+    )
 
     # 3. 配置多智能体团队（管理者 + 专家）
     config = MultiAgentConfig(
@@ -182,6 +187,11 @@ tgo/agents/
 ├── memory/                        # 🧠 记忆管理
 │   ├── memory_manager.py          # 记忆管理实现
 │   └── session_manager.py         # 会话管理
+├── tools/                         # 🌐 MCP工具集成
+│   ├── mcp_tool_manager.py        # MCP工具管理器
+│   ├── mcp_connector.py           # MCP协议连接器
+│   ├── mcp_tool_proxy.py          # 框架工具适配器
+│   └── mcp_security_manager.py    # 安全控制
 ├── example.py                     # 📖 完整使用示例
 └── debug_example.py               # 🔧 调试示例
 ```
@@ -252,6 +262,38 @@ memories = await memory_manager.retrieve_memories(
 )
 ```
 
+### 6. 🌐 MCP工具集成
+Model Context Protocol (MCP) 支持外部工具访问：
+
+```python
+from tgo.agents import MCPToolManager, MCPServerConfig
+
+# 配置MCP服务器
+server_config = MCPServerConfig(
+    server_id="filesystem",
+    name="文件系统工具",
+    description="文件操作工具",
+    transport_type="stdio",
+    command="npx",
+    args=["@modelcontextprotocol/server-filesystem", "/workspace"],
+    trusted=True
+)
+
+# 初始化MCP工具管理器
+mcp_manager = MCPToolManager()
+await mcp_manager.register_server(server_config)
+await mcp_manager.connect_to_server("filesystem")
+
+# 配置具有MCP工具的智能体
+agent_config = AgentConfig(
+    agent_id="file_agent",
+    name="文件处理智能体",
+    mcp_servers=["filesystem"],  # 可用的MCP服务器
+    mcp_auto_approve=True,       # 自动批准受信任的工具
+    instructions="你可以使用MCP工具读写文件。"
+)
+```
+
 ## 💡 使用示例
 
 ### 高级功能
@@ -274,6 +316,70 @@ async for update in coordinator.execute_task_stream(config, task):
 #### 批处理
 ```python
 results = await coordinator.execute_batch_tasks(config, [task1, task2, task3])
+```
+
+#### MCP工具集成示例
+```python
+from tgo.agents import MCPToolManager, MCPServerConfig
+from tgo.agents.tools.mcp_security_manager import MCPSecurityManager, SecurityPolicy
+
+# 设置MCP工具管理器
+mcp_manager = MCPToolManager()
+await mcp_manager.initialize()
+
+# 配置文件系统MCP服务器
+filesystem_config = MCPServerConfig(
+    server_id="filesystem",
+    name="文件系统工具",
+    description="文件操作工具",
+    transport_type="stdio",
+    command="npx",
+    args=["@modelcontextprotocol/server-filesystem", "/workspace"],
+    trusted=True
+)
+
+# 注册并连接MCP服务器
+await mcp_manager.register_server(filesystem_config)
+await mcp_manager.connect_to_server("filesystem")
+
+# 配置安全策略
+security_manager = MCPSecurityManager()
+restrictive_policy = SecurityPolicy(
+    allowed_tools={"read_file", "write_file"},
+    max_calls_per_minute=10,
+    require_approval_for_untrusted=True
+)
+security_manager.set_policy("file_agent", restrictive_policy)
+
+# 设置带MCP支持的协调器
+coordinator = MultiAgentCoordinator(
+    registry=registry,
+    memory_manager=memory_manager,
+    session_manager=session_manager,
+    mcp_tool_manager=mcp_manager
+)
+
+# 配置具有MCP工具访问权限的智能体
+config = MultiAgentConfig(
+    framework="google-adk",
+    agents=[
+        AgentConfig(
+            agent_id="file_processor",
+            name="文件处理智能体",
+            mcp_servers=["filesystem"],
+            mcp_auto_approve=True,
+            instructions="你可以使用MCP工具处理文件。"
+        )
+    ]
+)
+
+# 执行需要文件操作的任务
+task = Task(
+    title="处理数据文件",
+    description="读取CSV文件并生成分析报告"
+)
+
+result = await coordinator.execute_task(config, task)
 ```
 
 ## 🎯 核心设计决策

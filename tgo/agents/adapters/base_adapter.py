@@ -15,7 +15,10 @@ from contextlib import asynccontextmanager
 from ..core.interfaces import BaseFrameworkAdapter as IBaseFrameworkAdapter, MemoryManager
 from ..core.models import (
     Task, AgentConfig, AgentInstance, ExecutionContext,
-    AgentExecutionResult, ToolCallResult, KnowledgeBaseQueryResult
+    AgentExecutionResult, ToolCallResult, KnowledgeBaseQueryResult,
+)
+from ..tools.fastmcp_tool_manager import (
+    MCPToolManager
 )
 from ..core.enums import FrameworkCapability, AgentStatus, WorkflowType
 from ..core.exceptions import (
@@ -41,6 +44,9 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
         # Memory manager will be injected by coordinator
         self._memory_manager: Optional[MemoryManager] = None
 
+        # MCP tool manager will be injected by coordinator
+        self._mcp_tool_manager: Optional[MCPToolManager] = None  # Avoid circular import
+
         # Default capabilities - subclasses should override
         self._capabilities = [
             FrameworkCapability.SINGLE_AGENT,
@@ -53,7 +59,7 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
             self._agent_locks[agent_id] = asyncio.Lock()
         return self._agent_locks[agent_id]
 
-    async def set_memory_manager(self, memory_manager: Optional[MemoryManager]) -> None:
+    def set_memory_manager(self, memory_manager: Optional[MemoryManager]) -> None:
         """Set the memory manager for this adapter.
 
         This method is called by the coordinator to inject the memory manager.
@@ -71,6 +77,25 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
             Memory manager instance or None if not set
         """
         return self._memory_manager
+
+    def set_mcp_tool_manager(self, mcp_tool_manager: Optional[Any]) -> None:
+        """Set the MCP tool manager for this adapter.
+
+        This method is called by the coordinator to inject the MCP tool manager.
+
+        Args:
+            mcp_tool_manager: MCP tool manager instance or None
+        """
+        self._mcp_tool_manager = mcp_tool_manager
+        self._logger.debug(f"MCP tool manager {'set' if mcp_tool_manager else 'cleared'} for {self.framework_name}")
+
+    def get_mcp_tool_manager(self) -> Optional[Any]:
+        """Get the current MCP tool manager.
+
+        Returns:
+            MCP tool manager instance or None if not set
+        """
+        return self._mcp_tool_manager
     
     async def get_agent(self, agent_id: str) -> Optional[AgentInstance]:
         """Get an agent instance by ID."""
@@ -246,7 +271,7 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
     
     # Abstract methods that subclasses must implement
     @abstractmethod
-    async def _create_framework_agent(self, config: AgentConfig) -> Any:
+    async def _create_framework_agent(self, config: AgentConfig,context: ExecutionContext) -> Any:
         """Create a framework-specific agent instance.
         
         Args:
@@ -314,7 +339,7 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
         except Exception as e:
             self._logger.error(f"Error during cleanup of {self.framework_name} adapter: {e}")
     
-    async def create_agent(self, config: AgentConfig) -> AgentInstance:
+    async def create_agent(self, config: AgentConfig,context: ExecutionContext) -> AgentInstance:
         """Create an agent instance."""
         if not self._initialized:
             raise FrameworkError(f"{self.framework_name} adapter not initialized")
@@ -325,7 +350,7 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
         async with self._get_agent_lock(config.agent_id):
             try:
                 # Create framework-specific agent
-                framework_agent = await self._create_framework_agent(config)
+                framework_agent = await self._create_framework_agent(config,context)
 
                 # Create agent instance
                 instance = await self._create_agent_instance(config)
@@ -378,18 +403,6 @@ class BaseFrameworkAdapter(IBaseFrameworkAdapter):
                 return await self._handle_execution_error(e, agent_id, task)
     
     # Abstract methods that subclasses must implement
-    @abstractmethod
-    async def call_tool(
-        self,
-        agent_id: str,
-        tool_id: str,
-        tool_name: str,
-        parameters: Dict[str, Any],
-        context: ExecutionContext
-    ) -> ToolCallResult:
-        """Call a tool through an agent."""
-        pass
-
     @abstractmethod
     async def query_knowledge_base(
         self,

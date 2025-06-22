@@ -7,9 +7,9 @@ the multi-agent system, providing type safety and validation.
 
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 import uuid as uuid_lib
-
+from mcp.types import Content, TextContent
 
 from .enums import (
     AgentType, AgentStatus, TaskType, TaskStatus, TaskPriority,
@@ -146,9 +146,14 @@ class AgentConfig(BaseModel):
     capabilities: List[str] = Field(default_factory=list, description="Agent capabilities")
     instructions: Optional[str] = Field(None, description="Agent instructions", max_length=2000)
 
-    # Resources
-    tools: List[str] = Field(default_factory=list, description="Available tools")
+    # Resources - tools can be functions or MCPTool objects
+    tools: List[Any] = Field(default_factory=list, description="Available tools (functions or MCPTool objects)")
     knowledge_bases: List[str] = Field(default_factory=list, description="Available knowledge bases")
+
+    # MCP (Model Context Protocol) configuration - deprecated, use tools array instead
+    mcp_servers: List[str] = Field(default_factory=list, description="[Deprecated] Available MCP server IDs")
+    mcp_tools: List[str] = Field(default_factory=list, description="[Deprecated] Specific MCP tools to enable")
+    mcp_auto_approve: bool = Field(default=False, description="Auto-approve MCP tool calls")
 
     # Execution parameters
     max_iterations: int = Field(default=10, description="Maximum iterations", ge=1, le=100)
@@ -157,6 +162,26 @@ class AgentConfig(BaseModel):
 
     # Framework-specific configuration
     framework_config: Dict[str, Any] = Field(default_factory=dict, description="Framework-specific config")
+
+    def get_function_tools(self) -> List[Any]:
+        """Get function tools from the tools list."""
+        return [tool for tool in self.tools if callable(tool) and not hasattr(tool, 'server_id')]
+
+    def get_mcp_tools(self) -> List[Any]:
+        """Get MCP tools from the tools list."""
+        return [tool for tool in self.tools if hasattr(tool, 'server_id') and hasattr(tool, 'name')]
+
+    def get_string_tools(self) -> List[str]:
+        """Get string tool names from the tools list."""
+        return [tool for tool in self.tools if isinstance(tool, str)]
+
+    def has_mcp_tools(self) -> bool:
+        """Check if agent has any MCP tools."""
+        return len(self.get_mcp_tools()) > 0
+
+    def has_function_tools(self) -> bool:
+        """Check if agent has any function tools."""
+        return len(self.get_function_tools()) > 0
 
 
 class AgentInstance(BaseModel):
@@ -693,6 +718,115 @@ class MemoryConfig(BaseModel):
         ge=0.0,
         le=1.0
     )
+
+
+
+class MCPTool(BaseModel):
+    """Represents an MCP tool definition."""
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        validate_assignment=True,
+        extra='forbid'
+    )
+
+    name: str = Field(..., description="Tool name", min_length=1, max_length=100)
+    title: Optional[str] = Field(None, description="Human-readable title", max_length=200)
+    description: str = Field(..., description="Tool description", min_length=1, max_length=1000)
+
+    # Schema definitions
+    input_schema: Dict[str, Any] = Field(..., description="JSON Schema for input parameters")
+    output_schema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema for output")
+
+    # Tool metadata
+    server_id: str = Field(..., description="MCP server providing this tool")
+    annotations: Dict[str, Any] = Field(default_factory=dict, description="Tool annotations")
+
+    # Security and permissions
+    requires_confirmation: bool = Field(default=True, description="Whether tool requires user confirmation")
+    allowed_contexts: List[str] = Field(default_factory=list, description="Allowed execution contexts")
+
+    # Caching and performance
+    cacheable: bool = Field(default=False, description="Whether results can be cached")
+    cache_ttl_seconds: Optional[int] = Field(None, description="Cache TTL in seconds", ge=0)
+
+    # Metadata
+    discovered_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Tool discovery time"
+    )
+    last_used: Optional[datetime] = Field(None, description="Last usage time")
+    usage_count: int = Field(default=0, description="Usage count", ge=0)
+
+
+class MCPToolCallRequest(BaseModel):
+    """Request to call an MCP tool."""
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        validate_assignment=True,
+        extra='forbid'
+    )
+
+    request_id: str = Field(
+        default_factory=lambda: str(uuid_lib.uuid4()),
+        description="Unique request identifier"
+    )
+    tool_name: str = Field(..., description="Tool name to call", min_length=1)
+    server_id: str = Field(..., description="MCP server ID", min_length=1)
+
+    # Call parameters
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+
+    # Execution context
+    agent_id: Optional[str] = Field(None, description="Calling agent ID")
+    session_id: Optional[str] = Field(None, description="Session ID")
+    user_id: Optional[str] = Field(None, description="User ID")
+
+    # Security and permissions
+    user_approved: bool = Field(default=False, description="Whether user approved the call")
+    approval_timestamp: Optional[datetime] = Field(None, description="Approval timestamp")
+
+    # Request metadata
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Request creation time"
+    )
+    timeout_seconds: int = Field(default=30, description="Request timeout", ge=1, le=300)
+
+
+class MCPToolCallResult(BaseModel):
+    """Result of an MCP tool call."""
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        validate_assignment=True,
+        extra='forbid'
+    )
+
+    request_id: str = Field(..., description="Original request ID")
+    tool_name: str = Field(..., description="Tool name that was called")
+    server_id: str = Field(..., description="MCP server ID")
+
+    # Execution result
+    success: bool = Field(..., description="Whether call was successful")
+    content: List[Content] = Field(default_factory=list[Content], description="Tool result content")
+    text: Optional[str] = Field(None, description="Extracted text content")
+    is_error: bool = Field(default=False, description="Whether result is an error")
+    error_message: Optional[str] = Field(None, description="Error message if failed")
+
+    # Execution metrics
+    execution_time_ms: Optional[int] = Field(None, description="Execution time", ge=0)
+    started_at: Optional[datetime] = Field(None, description="Execution start time")
+    completed_at: Optional[datetime] = Field(None, description="Execution completion time")
+
+    # Resource usage
+    tokens_used: Optional[int] = Field(None, description="Tokens used", ge=0)
+    memory_usage_mb: Optional[float] = Field(None, description="Memory usage", ge=0)
+
+    def is_successful(self) -> bool:
+        """Check if tool call was successful."""
+        return self.success and not self.is_error and self.error_message is None
 
 
 # Update forward references

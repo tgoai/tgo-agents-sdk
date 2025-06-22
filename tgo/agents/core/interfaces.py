@@ -244,8 +244,13 @@ class BaseFrameworkAdapter(ABC):
         return self._initialized
     
     @abstractmethod
-    async def  set_memory_manager(self, memory_manager: Optional[MemoryManager]) -> None:
+    def set_memory_manager(self, memory_manager: Optional[MemoryManager]) -> None:
         """Set the memory manager."""
+        pass
+
+    @abstractmethod
+    def set_mcp_tool_manager(self, mcp_tool_manager: Optional[Any]) -> None:
+        """Set the MCP tool manager."""
         pass
     
     def supports_capability(self, capability: FrameworkCapability) -> bool:
@@ -265,7 +270,7 @@ class BaseFrameworkAdapter(ABC):
         pass
     
     @abstractmethod
-    async def create_agent(self, config: AgentConfig) -> AgentInstance:
+    async def create_agent(self, config: AgentConfig,context: ExecutionContext) -> AgentInstance:
         """Create an agent instance."""
         pass
     
@@ -284,17 +289,6 @@ class BaseFrameworkAdapter(ABC):
         """Execute a task with an agent."""
         pass
     
-    @abstractmethod
-    async def call_tool(
-        self, 
-        agent_id: str, 
-        tool_id: str, 
-        tool_name: str, 
-        parameters: Dict[str, Any],
-        context: ExecutionContext
-    ) -> ToolCallResult:
-        """Call a tool through an agent."""
-        pass
     
     @abstractmethod
     async def query_knowledge_base(

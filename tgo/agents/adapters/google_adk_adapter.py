@@ -2,52 +2,70 @@
 Google ADK framework adapter.
 
 This module provides integration with Google Agent Development Kit (ADK),
-supporting both single-agent and multi-agent execution patterns.
+supporting both single-agent and multi-agent execution patterns with
+optimized MCP tool integration and memory management.
 """
 
+import asyncio
+import concurrent.futures
+import inspect
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, Type
 from datetime import datetime, timezone
-
+from dataclasses import dataclass
 
 # Google ADK imports - required dependencies
-from google.adk.agents import LlmAgent
-from google.adk.agents import BaseAgent
+from google.adk.agents import LlmAgent, BaseAgent
 from google.adk.events import Event
 from google.adk.runners import Runner
-from google.adk.tools import google_search
 from google.adk.sessions import InMemorySessionService
+from google.adk.tools import FunctionTool
 from google.genai import types
 
 from .base_adapter import BaseFrameworkAdapter
 from ..core.interfaces import MemoryManager
 from ..core.models import (
     Task, AgentConfig, ExecutionContext,
-    AgentExecutionResult, ToolCallResult, KnowledgeBaseQueryResult,
+    AgentExecutionResult, ToolCallResult, KnowledgeBaseQueryResult, MCPToolCallResult
 )
 from ..core.enums import FrameworkCapability, AgentType, SessionType
 from ..core.exceptions import AgentCreationError
-# Note: tool_manager and kb_manager imports removed for testing
-# These would be imported from the actual tool and knowledge base modules
-# from ...tools.tool_manager import tool_manager
-# from ...knowledge.kb_manager import kb_manager
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ADKConfig:
+    """Configuration for Google ADK adapter."""
+    timeout_seconds: int = 300  # 5 minutes
+    max_iterations: int = 10
+    retry_attempts: int = 3
+    mcp_tool_timeout: int = 30  # seconds
+    memory_limit: int = 5  # number of memories to retrieve
+    memory_importance_threshold: float = 0.3
+
+
+# Type aliases for better readability
+ToolProcessor = Callable[[Any, ExecutionContext], Any]
+AgentCreator = Callable[[AgentConfig, List[Any]], Any]
+
 class GoogleADKAdapter(BaseFrameworkAdapter):
     """Google ADK framework adapter.
-    
+
     Provides integration with Google Agent Development Kit, supporting:
     - Single agent execution
     - Multi-agent coordination (hierarchical, sequential, parallel)
-    - Tool calling integration
+    - Tool calling integration with optimized MCP support
     - Knowledge base querying
+    - Memory management integration
     - Streaming execution (if supported by ADK)
     """
-    
-    def __init__(self):
+
+    def __init__(self, config: Optional[ADKConfig] = None):
         super().__init__("google-adk", "1.4.1")
+
+        # Configuration
+        self._config = config or ADKConfig()
 
         # Set capabilities
         self._capabilities = [
@@ -61,16 +79,48 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
 
         # Memory manager will be injected by coordinator
         self._memory_manager: Optional[MemoryManager] = None
-        
 
         # ADK-specific storage
         self._adk_agents: Dict[str, Any] = {}  # agent_id -> ADK agent instance
         self._run_configs: Dict[str, AgentConfig] = {}  # agent_id -> RunConfig
 
-        # Configuration
-        self._default_timeout = 300  # 5 minutes
-        self._max_iterations = 10
-        self._retry_attempts = 3
+        # Tool processors mapping
+        self._tool_processors: Dict[str, ToolProcessor] = {
+            'string': self._process_string_tool,
+            'function': self._process_function_tool,
+            'mcp': self._process_mcp_tool
+        }
+
+        # Agent creators mapping
+        self._agent_creators: Dict[AgentType, AgentCreator] = {
+            AgentType.MANAGER: self._create_manager_agent,
+            AgentType.EXPERT: self._create_expert_agent
+        }
+
+    @property
+    def config(self) -> ADKConfig:
+        """Get the current configuration."""
+        return self._config
+
+    def update_config(self, **kwargs) -> None:
+        """Update configuration parameters."""
+        for key, value in kwargs.items():
+            if hasattr(self._config, key):
+                setattr(self._config, key, value)
+            else:
+                logger.warning(f"Unknown configuration parameter: {key}")
+
+    def get_agent_stats(self) -> Dict[str, Any]:
+        """Get statistics about managed agents."""
+        return {
+            "total_agents": len(self._adk_agents),
+            "agent_ids": list(self._adk_agents.keys()),
+            "config": {
+                "timeout_seconds": self._config.timeout_seconds,
+                "mcp_tool_timeout": self._config.mcp_tool_timeout,
+                "memory_limit": self._config.memory_limit
+            }
+        }
     
     async def _initialize_framework(self) -> None:
         """Initialize Google ADK framework."""
@@ -91,32 +141,30 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
         self._adk_agents.pop(agent_id, None)
         self._run_configs.pop(agent_id, None)
 
-    async def _create_framework_agent(self, config: AgentConfig) -> Any:
-        """Create a Google ADK agent instance."""
+    async def _create_framework_agent(self, config: AgentConfig, context: ExecutionContext) -> Any:
+        """Create a Google ADK agent instance with optimized tool processing."""
         try:
-            # Get tools for the agent
-            tools = await self._get_tools_for_agent(config.tools)
-            
-            # Create ADK agent based on type
-            if config.agent_type == AgentType.MANAGER:
-                adk_agent = await self._create_manager_agent(config, tools)
-            elif config.agent_type == AgentType.EXPERT:
-                adk_agent = await self._create_expert_agent(config, tools)
-            else:
-                adk_agent = await self._create_llm_agent(config, tools)
-            # Create run configuration
+            logger.debug(f"Creating Google ADK agent: {config.agent_id}")
+
+            # Process tools from the unified tools array
+            all_tools = await self._process_agent_tools(config, context)
+
+            # Create ADK agent based on type using mapping
+            creator = self._agent_creators.get(config.agent_type, self._create_llm_agent)
+            adk_agent = await creator(config, all_tools)
+
+            # Create and store run configuration
             run_config = self._create_run_config(config)
-            
-            # Store ADK-specific instances
             self._adk_agents[config.agent_id] = adk_agent
             self._run_configs[config.agent_id] = run_config
-            
-            logger.info(f"Created Google ADK agent: {config.agent_id}")
+
+            logger.info(f"✅ Created Google ADK agent: {config.agent_id} with {len(all_tools)} tools")
             return adk_agent
-            
+
         except Exception as e:
-            logger.error(f"Failed to create Google ADK agent: {e}")
-            raise AgentCreationError(f"Failed to create Google ADK agent: {e}")
+            error_msg = f"Failed to create Google ADK agent {config.agent_id}: {e}"
+            logger.error(error_msg)
+            raise AgentCreationError(error_msg)
     
     async def _create_manager_agent(self, config: AgentConfig, tools: List[Any]) -> Any:
         """Create a manager agent for coordination."""
@@ -163,10 +211,6 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
         """Get ADK tools for an agent."""
         tools: List[Any] = []
 
-        # Add Google Search
-        if google_search:
-            tools.append(google_search)
-
         # Add custom tools through tool manager
         for tool_id in tool_ids:
             try:
@@ -177,7 +221,236 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
                 logger.warning(f"Failed to load tool {tool_id}: {e}")
 
         return tools
-    
+
+    async def _process_agent_tools(self, config: AgentConfig, context: ExecutionContext) -> List[Any]:
+        """Process tools from the unified tools array with improved error handling."""
+        all_tools = []
+
+        for tool in config.tools:
+            try:
+                processed_tool = await self._process_single_tool(tool, context)
+                if processed_tool:
+                    all_tools.append(processed_tool)
+            except Exception as e:
+                logger.error(f"Failed to process tool {tool}: {e}")
+                # Continue processing other tools instead of failing completely
+
+        logger.info(f"Processed {len(all_tools)} tools for agent {config.agent_id}")
+        return all_tools
+
+    async def _process_single_tool(self, tool: Any, context: ExecutionContext) -> Optional[Any]:
+        """Process a single tool with type detection and appropriate processor."""
+        tool_type = self._identify_tool_type(tool)
+        processor = self._tool_processors.get(tool_type)
+
+        if not processor:
+            logger.warning(f"Unknown tool type: {type(tool)} for tool: {tool}")
+            return None
+
+        return await processor(tool, context)
+
+    def _identify_tool_type(self, tool) -> str:
+        """Identify the type of tool."""
+        if isinstance(tool, str):
+            return 'string'
+        elif callable(tool):
+            return 'function'
+        elif hasattr(tool, 'server_id') and hasattr(tool, 'name'):
+            return 'mcp'
+        else:
+            return 'unknown'
+
+    async def _process_string_tool(self, tool: str,context: ExecutionContext) -> Optional[Any]:
+        """Process string tool name."""
+        string_tools = await self._get_tools_for_agent([tool])
+        return string_tools[0] if string_tools else None
+
+    async def _process_function_tool(self, tool: Callable,context: ExecutionContext) -> Any:
+        """Process function tool."""
+        return self._create_adk_function_tool_wrapper(tool)
+
+    async def _process_mcp_tool(self, tool,context: ExecutionContext) -> Any:
+        """Process MCP tool object."""
+        return await self._create_adk_mcp_tool_from_object(tool,context)
+
+    def _create_adk_function_tool_wrapper(self, func) -> Any:
+        """Create an ADK tool wrapper for a function tool."""
+        # Create Google ADK FunctionTool from function
+        adk_tool = FunctionTool(func=func)
+        return adk_tool
+
+    async def _create_adk_mcp_tool_from_object(self, mcp_tool, context: ExecutionContext) -> Any:
+        """Create an ADK tool wrapper from an MCP tool object with optimized async handling."""
+        try:
+            from google.adk.tools import FunctionTool
+
+            def mcp_tool_function(**kwargs) -> str:
+                """Optimized MCP tool function wrapper (sync)."""
+                logger.debug(f"MCP tool '{mcp_tool.name}' called with args: {kwargs}")
+
+                if not self._mcp_tool_manager:
+                    logger.warning(f"No MCP tool manager available for {mcp_tool.name}")
+                    return f"MCP tool {mcp_tool.name} unavailable (no manager)"
+
+                return self._execute_mcp_tool_sync(mcp_tool, kwargs, context)
+
+            # Set function attributes for Google ADK compatibility
+            self._set_function_attributes(mcp_tool_function, mcp_tool)
+
+            # Create Google ADK FunctionTool
+            return FunctionTool(func=mcp_tool_function)
+
+        except ImportError:
+            logger.warning("Google ADK FunctionTool not available, using mock tool")
+            return self._create_mock_mcp_tool(mcp_tool)
+
+    def _execute_mcp_tool_sync(self, mcp_tool, kwargs: Dict[str, Any], context: ExecutionContext) -> str:
+        """Execute MCP tool synchronously using thread pool."""
+        try:
+            def run_async_call():
+                """Run the async MCP tool call in a separate thread with its own event loop."""
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    if self._mcp_tool_manager:
+                        return new_loop.run_until_complete(
+                            self._mcp_tool_manager.call_tool(mcp_tool, kwargs, context, True)
+                        )
+                    return None
+                finally:
+                    new_loop.close()
+
+            # Execute with timeout
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_async_call)
+                try:
+                    result = future.result(timeout=self._config.mcp_tool_timeout)
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"MCP tool '{mcp_tool.name}' timed out after {self._config.mcp_tool_timeout}s")
+                    return f"Tool '{mcp_tool.name}' timed out"
+
+            return self._extract_mcp_result(result, mcp_tool.name)
+
+        except Exception as e:
+            logger.error(f"MCP tool '{mcp_tool.name}' execution failed: {e}")
+            return f"Tool '{mcp_tool.name}' error: {e}"
+
+    def _extract_mcp_result(self, result: MCPToolCallResult, tool_name: str) -> str:
+        """Extract result content from MCP tool call result."""
+        if result.success:
+            return result.text or f"Tool '{tool_name}' executed successfully, but no text"
+        return f"Tool '{tool_name}' executed failed"
+
+    def _set_function_attributes(self, func: Callable, mcp_tool) -> None:
+        """Set function attributes for Google ADK compatibility."""
+        func.__name__ = mcp_tool.name
+        func.__doc__ = mcp_tool.description
+
+        # Apply function signature from MCP input_schema
+        try:
+            function_signature = self._create_function_signature_from_schema(mcp_tool)
+            if function_signature:
+                # Use setattr to avoid type checker warnings
+                setattr(func, '__signature__', function_signature)
+                setattr(func, '__annotations__', self._extract_annotations_from_schema(mcp_tool))
+        except Exception as e:
+            logger.warning(f"Failed to set function signature: {e}")
+
+    def _create_mock_mcp_tool(self, mcp_tool):
+        """Create a mock MCP tool for testing."""
+        class MockMCPTool:
+            def __init__(self, mcp_tool_obj):
+                self.mcp_tool = mcp_tool_obj
+                self.name = mcp_tool_obj.name
+                self.__name__ = self.name
+                self.description = mcp_tool_obj.description
+                self.__doc__ = self.description
+
+            async def __call__(self, **kwargs):
+                return f"Mock MCP tool {self.name} called with {kwargs}"
+
+        return MockMCPTool(mcp_tool)
+
+    def _create_function_signature_from_schema(self, mcp_tool) -> Any:
+        """Create a Python function signature from MCP tool input schema."""
+        try:
+            import inspect
+
+            if not mcp_tool.input_schema or not isinstance(mcp_tool.input_schema, dict):
+                return None
+
+            schema = mcp_tool.input_schema
+            properties = schema.get("properties", {})
+            required = schema.get("required", [])
+
+            parameters = []
+
+            for param_name, param_def in properties.items():
+                param_type = param_def.get("type", "string")
+                param_default = param_def.get("default", inspect.Parameter.empty)
+
+                # Convert JSON schema types to Python types
+                python_type = self._json_type_to_python_type(param_type)
+
+                # Determine if parameter is required
+                if param_name in required and param_default == inspect.Parameter.empty:
+                    kind = inspect.Parameter.POSITIONAL_OR_KEYWORD
+                else:
+                    kind = inspect.Parameter.POSITIONAL_OR_KEYWORD
+                    if param_default == inspect.Parameter.empty:
+                        param_default = None
+
+                param = inspect.Parameter(
+                    name=param_name,
+                    kind=kind,
+                    default=param_default,
+                    annotation=python_type
+                )
+                parameters.append(param)
+
+            return inspect.Signature(parameters)
+
+        except Exception as e:
+            logger.warning(f"Failed to create function signature from MCP schema: {e}")
+            return None
+
+    def _extract_annotations_from_schema(self, mcp_tool) -> dict:
+        """Extract type annotations from MCP tool schema."""
+        try:
+            if not mcp_tool.input_schema or not isinstance(mcp_tool.input_schema, dict):
+                return {}
+
+            schema = mcp_tool.input_schema
+            properties = schema.get("properties", {})
+            annotations = {}
+
+            for param_name, param_def in properties.items():
+                param_type = param_def.get("type", "string")
+                python_type = self._json_type_to_python_type(param_type)
+                annotations[param_name] = python_type
+
+            # Add return type annotation
+            annotations['return'] = str
+
+            return annotations
+
+        except Exception as e:
+            logger.warning(f"Failed to extract annotations from MCP schema: {e}")
+            return {}
+
+    def _json_type_to_python_type(self, json_type: str) -> type:
+        """Convert JSON schema type to Python type."""
+        type_mapping = {
+            "string": str,
+            "integer": int,
+            "number": float,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+            "null": type(None)
+        }
+        return type_mapping.get(json_type, str)
+
     async def _execute_framework_task(
         self,
         framework_agent: Any,
@@ -231,37 +504,39 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
         return "\n".join(input_parts)
 
     async def _prepare_task_input_with_memory(self, task: Task, context: ExecutionContext) -> str:
-        """Prepare task input enhanced with relevant memories."""
-        # Start with basic task input
+        """Prepare task input enhanced with relevant memories using optimized retrieval."""
         task_input = self._prepare_task_input(task)
 
-        # Add memories if available
-        if context.session_id and self._memory_manager:
-            try:
-                # Determine session type (default to single chat if not available)
-                session_type = SessionType.SINGLE_CHAT  # Could be enhanced to get from context
+        if not (context.session_id and self._memory_manager):
+            return task_input
 
-                # Retrieve relevant memories
-                memories = await self._memory_manager.retrieve_memories(
-                    session_id=context.session_id,
-                    session_type=session_type,
-                    agent_id=context.agent_id,
-                    limit=5,
-                    min_importance=0.3
-                )
-
-                if memories:
-                    memory_context = "\n".join([
-                        f"- {memory.content}" for memory in memories
-                    ])
-                    task_input += f"\n\nRelevant context from previous interactions:\n{memory_context}"
-
-                    logger.debug(f"Enhanced task input with {len(memories)} memories")
-
-            except Exception as e:
-                logger.warning(f"Failed to retrieve memories: {e}")
+        try:
+            memories = await self._retrieve_relevant_memories(context)
+            if memories:
+                memory_context = self._format_memory_context(memories)
+                task_input += f"\n\nRelevant context from previous interactions:\n{memory_context}"
+                logger.debug(f"Enhanced task input with {len(memories)} memories")
+        except Exception as e:
+            logger.warning(f"Failed to retrieve memories: {e}")
 
         return task_input
+
+    async def _retrieve_relevant_memories(self, context: ExecutionContext) -> List[Any]:
+        """Retrieve relevant memories for the current context."""
+        if not self._memory_manager:
+            return []
+
+        return await self._memory_manager.retrieve_memories(
+            session_id=context.session_id,
+            session_type=SessionType.SINGLE_CHAT,  # Could be enhanced to get from context
+            agent_id=context.agent_id,
+            limit=self._config.memory_limit,
+            min_importance=self._config.memory_importance_threshold
+        )
+
+    def _format_memory_context(self, memories: List[Any]) -> str:
+        """Format memories into a readable context string."""
+        return "\n".join([f"- {memory.content}" for memory in memories])
 
     async def _store_execution_memory(
         self,
@@ -340,30 +615,15 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
         context: ExecutionContext,
         start_time: datetime
     ) -> AgentExecutionResult:
-        """Process ADK execution result."""
-        # Note: task and context parameters available for future use
+        """Process ADK execution result with improved data extraction."""
         end_time = datetime.now(timezone.utc)
         execution_time = int((end_time - start_time).total_seconds() * 1000)
-        
+
         # Extract result data
-        result_data: Dict[str, Any]
-        if adk_result and adk_result.content and adk_result.content.parts:
-            result_data = {"response": adk_result.content.parts[0].text}
-        else:
-            result_data = {"response": "No final response received."}
-        
-        functionResponses = adk_result.get_function_responses()
-        toolCalls: List[ToolCallResult] = []
-        if functionResponses:
-            for functionResponse in functionResponses:
-                toolCalls.append(ToolCallResult(
-                    tool_name=functionResponse.name,
-                    tool_id=functionResponse.name,
-                    success=True,
-                    result=functionResponse.response,
-                    error_message=None,
-                    execution_time_ms=execution_time
-                ))
+        result_data = self._extract_response_data(adk_result)
+
+        # Extract tool calls
+        tool_calls = self._extract_tool_calls(adk_result, execution_time)
 
         return AgentExecutionResult(
             success=True,
@@ -372,11 +632,38 @@ class GoogleADKAdapter(BaseFrameworkAdapter):
             execution_time_ms=execution_time,
             started_at=start_time,
             completed_at=end_time,
-            tool_calls=toolCalls,  # TODO: Extract tool calls from ADK result
+            tool_calls=tool_calls,
             kb_queries=[],  # TODO: Extract KB queries from ADK result
             reasoning_steps=[],  # TODO: Extract reasoning steps
             intermediate_results=[]
         )
+
+    def _extract_response_data(self, adk_result: Event) -> Dict[str, Any]:
+        """Extract response data from ADK result."""
+        if adk_result and adk_result.content and adk_result.content.parts:
+            return {"response": adk_result.content.parts[0].text}
+        return {"response": "No final response received."}
+
+    def _extract_tool_calls(self, adk_result: Event, execution_time: int) -> List[ToolCallResult]:
+        """Extract tool calls from ADK result."""
+        tool_calls = []
+
+        if not adk_result:
+            return tool_calls
+
+        function_responses = adk_result.get_function_responses()
+        if function_responses:
+            for function_response in function_responses:
+                tool_calls.append(ToolCallResult(
+                    tool_name=function_response.name,
+                    tool_id=function_response.name,
+                    success=True,
+                    result=function_response.response,
+                    error_message=None,
+                    execution_time_ms=execution_time
+                ))
+
+        return tool_calls
     
     def _get_default_manager_instructions(self) -> str:
         """Get default instructions for manager agents."""
@@ -404,51 +691,6 @@ Your responsibilities:
 
 Focus on delivering excellent results within your area of specialization."""
     
-    # Tool calling implementation
-    async def call_tool(
-        self,
-        agent_id: str,
-        tool_id: str,
-        tool_name: str,
-        parameters: Dict[str, Any],
-        context: ExecutionContext
-    ) -> ToolCallResult:
-        """Call a tool through the agent."""
-        # Note: agent_id and context parameters available for future use
-        start_time = datetime.now(timezone.utc)
-        
-        try:
-            # Mock tool execution for testing
-            # In real implementation, this would use the tool manager
-            result = {
-                "tool_result": f"Mock result from tool {tool_name}",
-                "parameters_used": parameters
-            }
-            
-            end_time = datetime.now(timezone.utc)
-            execution_time = int((end_time - start_time).total_seconds() * 1000)
-            
-            return ToolCallResult(
-                tool_name=tool_name,
-                tool_id=tool_id,
-                success=True,
-                result=result,
-                error_message=None,
-                execution_time_ms=execution_time
-            )
-            
-        except Exception as e:
-            end_time = datetime.now(timezone.utc)
-            execution_time = int((end_time - start_time).total_seconds() * 1000)
-            
-            return ToolCallResult(
-                tool_name=tool_name,
-                tool_id=tool_id,
-                success=False,
-                result=None,
-                error_message=str(e),
-                execution_time_ms=execution_time
-            )
     
     # Knowledge base querying implementation
     async def query_knowledge_base(

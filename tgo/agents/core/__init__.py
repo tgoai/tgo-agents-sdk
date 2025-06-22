@@ -54,6 +54,11 @@ from .models import (
     # Tool and KB models
     ToolCallResult,
     KnowledgeBaseQueryResult,
+
+    # MCP models
+    MCPTool,
+    MCPToolCallRequest,
+    MCPToolCallResult,
 )
 
 from .enums import (
@@ -138,6 +143,11 @@ __all__ = [
     "ExecutionMetrics",
     "ToolCallResult",
     "KnowledgeBaseQueryResult",
+
+    # MCP models
+    "MCPTool",
+    "MCPToolCallRequest",
+    "MCPToolCallResult",
 
     # Enums
     "AgentType",

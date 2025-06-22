@@ -25,6 +25,9 @@ from ..core.exceptions import (
     MultiAgentError, FrameworkNotFoundError, AgentCreationError,
     WorkflowExecutionError
 )
+
+from ..tools.fastmcp_tool_manager import MCPToolManager
+
 from ..registry import get_registry, AdapterRegistry
 from .workflow_engine import WorkflowEngine
 
@@ -50,7 +53,8 @@ class MultiAgentCoordinator(IMultiAgentCoordinator):
         self,
         registry: Optional['AdapterRegistry'] = None,
         session_manager: Optional[SessionManager] = None,
-        memory_manager: Optional[MemoryManager] = None
+        memory_manager: Optional[MemoryManager] = None,
+        mcp_tool_manager: Optional[MCPToolManager] = None
     ):
         self._registry = registry or get_registry()
         self._workflow_engine = WorkflowEngine(self._registry)
@@ -59,6 +63,9 @@ class MultiAgentCoordinator(IMultiAgentCoordinator):
         # Session and Memory managers (optional)
         self._session_manager = session_manager
         self._memory_manager = memory_manager
+
+        # MCP tool manager (optional)
+        self._mcp_tool_manager = mcp_tool_manager
 
         # Execution tracking
         self._active_executions: Dict[str, Dict[str, Any]] = {}
@@ -121,7 +128,7 @@ class MultiAgentCoordinator(IMultiAgentCoordinator):
             # Get framework adapter
             adapter = await self._get_framework_adapter(config.framework)
             # Create agents
-            agents = await self._create_agents(config.agents, adapter)
+            agents = await self._create_agents(config.agents, adapter,context)
             
             # Execute workflow
             result = await self._execute_workflow(
@@ -291,24 +298,29 @@ class MultiAgentCoordinator(IMultiAgentCoordinator):
         if not adapter.is_initialized:
             await self._registry.initialize_adapter(framework_name)
 
-        # Inject memory manager if available and adapter supports it
-        if self._memory_manager and hasattr(adapter, 'set_memory_manager'):
-            await adapter.set_memory_manager(self._memory_manager)
-            logger.debug(f"Injected memory manager into {framework_name} adapter")
+        # Inject memory manager
+        adapter.set_memory_manager(self._memory_manager)
+        logger.debug(f"Injected memory manager into {framework_name} adapter")
+            
+        # Inject mcp tool manager
+        adapter.set_mcp_tool_manager(self._mcp_tool_manager)
+        logger.debug(f"Injected MCP tool manager into {framework_name} adapter")
+            
 
         return adapter
     
     async def _create_agents(
         self,
         agent_configs: List[AgentConfig],
-        adapter: 'BaseFrameworkAdapter'
+        adapter: 'BaseFrameworkAdapter',
+        context: ExecutionContext
     ) -> List[AgentInstance]:
         """Create agent instances using the framework adapter."""
         agents: List[AgentInstance] = []
         
         for config in agent_configs:
             try:
-                agent = await adapter.create_agent(config)
+                agent = await adapter.create_agent(config,context)
                 agents.append(agent)
                 logger.info(f"Created agent: {config.agent_id}")
             except Exception as e:

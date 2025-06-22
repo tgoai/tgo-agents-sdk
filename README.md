@@ -26,6 +26,7 @@ graph TB
     Coordinator --> WorkflowEngine[⚙️ WorkflowEngine]
     Coordinator --> SessionMgr[🔐 SessionManager]
     Coordinator --> MemoryMgr[🧠 MemoryManager]
+    Coordinator --> MCPMgr[🌐 MCPToolManager]
 
     %% Framework Adapters Layer
     Registry --> GoogleADK[🟦 GoogleADKAdapter]
@@ -54,6 +55,7 @@ graph TB
 - **🌊 Real-time Streaming**: Live updates during task execution
 - **⚡ Batch Processing**: Efficient handling of multiple tasks
 - **🔧 Tool Integration**: Built-in support for external tools and APIs
+- **🌐 MCP Tools**: Model Context Protocol integration for external tool access
 - **📚 Knowledge Bases**: Query and integrate with knowledge repositories
 - **🔍 Capability Detection**: Automatic adapter selection based on requirements
 - **📊 Comprehensive Monitoring**: Detailed metrics and health monitoring
@@ -70,7 +72,7 @@ git clone <repository-url>
 cd tgo-agent-coordinator
 
 # Install dependencies
-pip install -r requirements.txt
+poetry install
 
 # Run the example
 python example.py
@@ -105,8 +107,11 @@ async def main():
     )
 
     # 2. Create session
-    await session_manager.create_session("session_001", "user_123", SessionType.SINGLE_CHAT)
-    session = Session(session_id="session_001", user_id="user_123", session_type=SessionType.SINGLE_CHAT)
+    session = await session_manager.create_session(
+        session_id="session_001",
+        user_id="user_123",
+        session_type=SessionType.SINGLE_CHAT
+    )
 
     # 3. Configure multi-agent team (Manager + Experts)
     config = MultiAgentConfig(
@@ -198,6 +203,11 @@ tgo/agents/
 ├── memory/                        # 🧠 Memory management
 │   ├── memory_manager.py          # Memory management implementation
 │   └── session_manager.py         # Session management
+├── tools/                         # 🌐 MCP tools integration
+│   ├── mcp_tool_manager.py        # MCP tool manager
+│   ├── mcp_connector.py           # MCP protocol connector
+│   ├── mcp_tool_proxy.py          # Framework tool adapter
+│   └── mcp_security_manager.py    # Security controls
 ├── example.py                     # 📖 Complete usage example
 └── basic_session_memory_example.py # 🧠 Memory & session example
 ```
@@ -221,14 +231,15 @@ adapter = registry.get_adapter_by_capability(FrameworkCapability.STREAMING)
 Orchestrates multi-agent task execution with memory and session management:
 
 ```python
-coordinator = MultiAgentCoordinator(registry)
+# Initialize with memory and session managers in constructor
+coordinator = MultiAgentCoordinator(
+    registry=registry,
+    memory_manager=memory_manager,
+    session_manager=session_manager
+)
 
-# Set up memory and session managers
-await coordinator.set_memory_manager(memory_manager)
-await coordinator.set_session_manager(session_manager)
-
-# Execute with context
-result = await coordinator.execute_task(config, task)
+# Execute with session context
+result = await coordinator.execute_task(config, task, session)
 ```
 
 ### 3. 🔌 Framework Adapters
@@ -267,6 +278,75 @@ memories = await memory_manager.retrieve_memories(
 )
 ```
 
+### 6. 🌐 Elegant Tool Configuration
+Unified tool configuration supporting both function tools and MCP tools in one array:
+
+```python
+from tgo.agents.core.models import MCPTool
+
+# Define function tools
+def calculate_metrics(revenue: float, growth_rate: float) -> dict:
+    """Calculate business metrics."""
+    return {
+        "projected_revenue": revenue * (1 + growth_rate),
+        "growth_percentage": growth_rate * 100
+    }
+
+async def fetch_data(source: str) -> str:
+    """Async function tool for data fetching."""
+    # Simulate async data fetching
+    await asyncio.sleep(0.1)
+    return f"Data from {source}"
+
+# Define MCP tools
+web_search_tool = MCPTool(
+    name="web_search",
+    description="Search the web for information",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer", "default": 5}
+        },
+        "required": ["query"]
+    },
+    server_id="web_api"
+)
+
+file_reader_tool = MCPTool(
+    name="read_file",
+    description="Read content from a file",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string"}
+        },
+        "required": ["file_path"]
+    },
+    server_id="filesystem"
+)
+
+# Configure agent with elegant mixed tools
+agent_config = AgentConfig(
+    agent_id="research_agent",
+    name="Research Agent",
+    agent_type=AgentType.EXPERT,
+    model="gemini-2.0-flash",
+    instructions="You have access to calculation functions, data fetching, web search, and file operations.",
+    tools=[
+        calculate_metrics,    # Function tool
+        fetch_data,          # Async function tool
+        web_search_tool,     # MCP tool
+        file_reader_tool     # MCP tool
+    ]  # Elegant: All tools in one array!
+)
+
+# Tool type detection
+print(f"Function tools: {len(agent_config.get_function_tools())}")  # 2
+print(f"MCP tools: {len(agent_config.get_mcp_tools())}")           # 2
+print(f"Has MCP tools: {agent_config.has_mcp_tools()}")           # True
+```
+
 ## 💡 Usage Examples
 
 ### Example 1: Single Agent Execution
@@ -278,10 +358,24 @@ from tgo.agents.core.models import MultiAgentConfig, AgentConfig, Task, Workflow
 from tgo.agents.core.enums import AgentType, WorkflowType, ExecutionStrategy
 
 async def single_agent_example():
-    # Setup
+    # Setup with memory and session management
+    memory_manager = InMemoryMemoryManager()
+    session_manager = InMemorySessionManager()
     registry = AdapterRegistry()
     registry.register("google-adk", GoogleADKAdapter())
-    coordinator = MultiAgentCoordinator(registry)
+
+    coordinator = MultiAgentCoordinator(
+        registry=registry,
+        memory_manager=memory_manager,
+        session_manager=session_manager
+    )
+
+    # Create session
+    session = await session_manager.create_session(
+        session_id="session_001",
+        user_id="user_123",
+        session_type=SessionType.SINGLE_CHAT
+    )
 
     # Configure single agent
     config = MultiAgentConfig(
@@ -301,13 +395,13 @@ async def single_agent_example():
         )
     )
 
-    # Execute task
+    # Execute task with session
     task = Task(
         title="Analyze AI Market Trends",
         description="Provide comprehensive analysis of AI market trends"
     )
 
-    result = await coordinator.execute_task(config, task)
+    result = await coordinator.execute_task(config, task, session)
     print(f"Result: {result.result}")
 
 asyncio.run(single_agent_example())
@@ -363,25 +457,32 @@ asyncio.run(hierarchical_example())
 ### Example 3: Memory and Session Management
 
 ```python
-from tgo.agents.memory.memory_manager import InMemoryMemoryManager
-from tgo.agents.memory.session_manager import InMemorySessionManager
+from tgo.agents import (
+    MultiAgentCoordinator, AdapterRegistry, GoogleADKAdapter,
+    InMemoryMemoryManager, InMemorySessionManager
+)
+from tgo.agents.core.models import Session
+from tgo.agents.core.enums import SessionType
 
 async def memory_example():
     # Setup with memory and session management
     memory_manager = InMemoryMemoryManager()
     session_manager = InMemorySessionManager()
+    registry = AdapterRegistry()
+    registry.register("google-adk", GoogleADKAdapter())
 
-    coordinator = MultiAgentCoordinator(registry)
-    await coordinator.set_memory_manager(memory_manager)
-    await coordinator.set_session_manager(session_manager)
+    coordinator = MultiAgentCoordinator(
+        registry=registry,
+        memory_manager=memory_manager,
+        session_manager=session_manager
+    )
 
     # Create session
-    session = Session(
+    session = await session_manager.create_session(
         session_id="session_123",
         user_id="user_456",
         session_type=SessionType.SINGLE_CHAT
     )
-    await session_manager.create_session(session)
 
     # Store context memory
     await memory_manager.store_memory(
@@ -392,9 +493,106 @@ async def memory_example():
     )
 
     # Execute task with memory context
-    result = await coordinator.execute_task(config, task)
+    result = await coordinator.execute_task(config, task, session)
 
 asyncio.run(memory_example())
+```
+
+### Example 4: MCP Tools Integration
+
+```python
+from tgo.agents import (
+    MultiAgentCoordinator, AdapterRegistry, GoogleADKAdapter,
+    MCPToolManager, MCPServerConfig, InMemoryMemoryManager, InMemorySessionManager
+)
+from tgo.agents.core.models import MultiAgentConfig, AgentConfig, Task, WorkflowConfig
+from tgo.agents.core.enums import AgentType, WorkflowType
+
+async def mcp_tools_example():
+    # Configure MCP servers
+    config = {
+        "mcpServers": {
+            # A remote HTTP server
+            "weather": {
+                "url": "https://weather-api.example.com/mcp",
+                "transport": "streamable-http"
+            },
+            # A local server running via stdio
+            "math_server": {
+                "command": "python",
+                "args": ["./fastmcp_simple_server.py"],
+                "env": {"DEBUG": "true"}
+            }
+        }
+    }
+    # Setup MCP tool manager
+    mcp_manager = MCPToolManager(config)
+
+    # Setup coordinator with MCP support
+    registry = AdapterRegistry()
+    registry.register("google-adk", GoogleADKAdapter())
+
+    coordinator = MultiAgentCoordinator(
+        registry=registry,
+        memory_manager=InMemoryMemoryManager(),
+        session_manager=InMemorySessionManager(),
+        mcp_tool_manager=mcp_manager
+    )
+
+    # Configure agents with MCP tool access
+    calculator_tool = MCPTool(
+        name="calculate",
+        description="Real MCP calculator via Stdio Transport",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "Mathematical expression to evaluate"}
+            },
+            "required": ["expression"]
+        },
+        server_id="math_server",  # Must match MCPServerConfig server_id
+        requires_confirmation=False
+    )
+    config = MultiAgentConfig(
+        framework="google-adk",
+        agents=[
+            AgentConfig(
+                agent_id="data_processor",
+                name="Data Processing Agent",
+                agent_type=AgentType.EXPERT,
+                model="gemini-2.0-flash",
+                instructions="You can read files and query databases using MCP tools.",
+                tools=[calculator_tool]
+            )
+        ],
+        workflow=WorkflowConfig(
+            workflow_type=WorkflowType.SINGLE
+        )
+    )
+
+    # Create task that requires MCP tools
+    task = Task(
+        title="Data Analysis Report",
+        description="Read data files and query database to create analysis report",
+        input_data={
+            "data_file": "/workspace/sales_data.csv",
+            "query": "SELECT * FROM customers WHERE region = 'North'"
+        }
+    )
+
+    # Execute task with MCP tools
+    result = await coordinator.execute_task(config, task)
+
+    if result.is_successful():
+        print("✅ MCP-enabled task completed!")
+        print(f"📊 Result: {result.result}")
+    else:
+        print(f"❌ Task failed: {result.error_message}")
+
+    # Cleanup
+    await mcp_manager.shutdown()
+
+asyncio.run(mcp_tools_example())
 ```
 
 ## 🚀 Advanced Features
@@ -458,6 +656,44 @@ multi_capable_adapters = registry.get_adapters_by_capabilities([
 ])
 ```
 
+### MCP Tools Security and Management
+Advanced security controls and management for MCP tools:
+
+```python
+from tgo.agents.tools.mcp_security_manager import MCPSecurityManager, SecurityPolicy, SecurityLevel
+
+# Configure security policies
+security_manager = MCPSecurityManager()
+
+# Restrictive policy for sensitive agents
+restrictive_policy = SecurityPolicy(
+    allowed_tools={"read_file", "safe_query"},
+    denied_tools={"delete_file", "system_command"},
+    max_calls_per_minute=10,
+    security_level=SecurityLevel.HIGH,
+    require_approval_for_untrusted=True
+)
+
+# Set policy for specific agent
+security_manager.set_policy("sensitive_agent", restrictive_policy)
+
+# Create MCP manager with security
+mcp_manager = MCPToolManager(security_manager=security_manager)
+
+# Check tool permissions
+permission = await mcp_manager.check_tool_permission(
+    agent_id="sensitive_agent",
+    tool_name="read_file",
+    context=execution_context
+)
+print(f"Permission: {permission}")  # "allow", "deny", or "require_approval"
+
+# Get security audit log
+audit_log = mcp_manager.get_security_audit_log(limit=50)
+for entry in audit_log:
+    print(f"{entry['timestamp']}: {entry['event_type']} - {entry['message']}")
+```
+
 ### Tool Integration and Knowledge Base Queries
 Agents can call tools and query knowledge bases:
 
@@ -469,6 +705,15 @@ tool_result = await adapter.call_tool(
     tool_name="web_search",
     parameters={"query": "latest AI trends"},
     context=execution_context
+)
+
+# MCP tool calling with security
+mcp_result = await adapter.call_mcp_tool(
+    agent_id="expert_001",
+    tool_name="filesystem_read",
+    arguments={"path": "/data/report.txt"},
+    context=execution_context,
+    user_approved=True
 )
 
 # Knowledge base queries
